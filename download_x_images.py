@@ -1,7 +1,12 @@
+#此脚本基于Grok V3 AI 开发
+#此脚本仅用来学习交流，请勿用于非法事情，一切使用后果，由使用者承担，作者不承担任何责任
+#使用此代码请遵守GPL V3协议(附加条款，禁止用于商业活动，或者谋取利益行为)
+
 import os
 import pickle
 import time
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from selenium import webdriver
@@ -10,14 +15,11 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-#此脚本基于Grok V3 AI 开发
-#此脚本仅用来学习交流，请勿用于非法事情，一切使用后果，由使用者承担，作者不承担任何责任
-#使用此代码请遵守GPL V3协议(附加条款，禁止用于商业活动，或者谋取利益行为)
-
 # 配置
 TARGET_AUTHOR = "用户名"      # 目标作者的Twitter用户名
 DOWNLOAD_DIR = TARGET_AUTHOR  # 图片下载目录
 COOKIES_FILE = "cookies.json" # Cookies保存文件
+MAX_THREADS = 10              # 最大下载线程数
 
 # 创建下载目录
 if not os.path.exists(DOWNLOAD_DIR):
@@ -28,18 +30,18 @@ driver = webdriver.Chrome()
 
 # 检测是否已登录
 def check_login():
-    print("请在浏览器中手动登录Twitter（60秒内完成）...")
+    print("请在浏览器中手动登录Twitter（120秒内完成）...")
     driver.get("https://twitter.com/login")
     try:
-        WebDriverWait(driver, 60).until(
+        WebDriverWait(driver, 120).until(
             EC.presence_of_element_located((By.XPATH, "//article[@role='article']"))
         )
         print("检测到已登录！")
         with open(COOKIES_FILE, "wb") as f:
             pickle.dump(driver.get_cookies(), f)
-        print("Cookies已保存到", COOKIES_FILE)
+        print(f"Cookies已保存到 {COOKIES_FILE}")
     except TimeoutException:
-        print("登录超时，请确保在60秒内完成登录！")
+        print("登录超时，请在120秒内完成登录！")
         driver.quit()
         exit(1)
 
@@ -60,11 +62,11 @@ def load_cookies():
             print("Cookies加载成功，已登录！")
             return True
         except TimeoutException:
-            print("Cookies无效，将尝试手动登录...")
+            print("Cookies无效，将尝试重新登录...")
             return False
     return False
 
-# 下载图片
+# 下载单张图片
 def download_image(url, filepath, max_retries=3):
     for attempt in range(1, max_retries + 1):
         try:
@@ -78,7 +80,7 @@ def download_image(url, filepath, max_retries=3):
                 print(f"下载图片失败: {url} (HTTP状态码: {response.status_code})，尝试 {attempt}/{max_retries}")
         except requests.RequestException as e:
             print(f"下载图片时出错: {url} ({e})，尝试 {attempt}/{max_retries}")
-        time.sleep(1)  # 短暂等待后重试
+        time.sleep(1)
     return False
 
 # 提取图片ID并构造高清URL
@@ -92,6 +94,44 @@ def get_image_info(img_url):
         print(f"无法解析图片URL: {img_url}")
         return None, None, None
 
+# 处理单张图片的下载逻辑
+def download_single_image(post_id, img_id, png_url, jpg_url, formatted_time):
+    try:
+        if formatted_time == "unknown":
+            filename_base = f"{post_id}_{img_id}"
+        else:
+            filename_base = f"{formatted_time}_{post_id}_{img_id}"
+
+        # 尝试下载PNG
+        png_filepath = os.path.join(DOWNLOAD_DIR, f"{filename_base}.png")
+        if download_image(png_url, png_filepath, max_retries=3):
+            return True
+
+        # PNG下载失败，尝试下载JPG
+        jpg_filepath = os.path.join(DOWNLOAD_DIR, f"{filename_base}.jpg")
+        if download_image(jpg_url, jpg_filepath, max_retries=3):
+            return True
+
+        # 两者都下载失败
+        print(f"图片 {filename_base} 下载失败（PNG和JPG均失败）")
+
+        # 询问用户是否继续尝试
+        while True:
+            user_input = input(f"图片 {filename_base} 6次尝试均失败，是否继续尝试下载？(y/n): ").strip().lower()
+            if user_input == 'y':
+                if download_image(png_url, png_filepath, max_retries=3):
+                    return True
+                elif download_image(jpg_url, jpg_filepath, max_retries=3):
+                    return True
+                else:
+                    print(f"再次尝试下载 {filename_base} 失败")
+            else:
+                print(f"跳过图片 {filename_base}")
+                return False
+    except Exception as e:
+        print(f"下载图片 {filename_base} 时出错: {e}")
+        return False
+
 # 处理帖子
 def process_posts():
     print("程序将自动模拟鼠标缓慢向下滑动，并处理新出现的帖子。\n")
@@ -102,8 +142,8 @@ def process_posts():
 
     while True:
         try:
-            # 模拟鼠标缓慢向下滑动，每0.5秒滑动100像素
-            driver.execute_script("window.scrollBy(0, 100);")
+            # 模拟鼠标缓慢向下滑动，每0.5秒滑动400像素
+            driver.execute_script("window.scrollBy(0, 400);")
             time.sleep(0.5)
 
             # 获取当前可见的帖子
@@ -160,55 +200,42 @@ def process_posts():
             else:
                 no_new_posts_time += 0.5
                 if no_new_posts_time >= 10:
+                    print("10秒内没有新帖子出现，等待用户输入...")
                     user_input = input("10秒内没有新帖子出现，是否继续？(y/n): ").strip().lower()
                     if user_input == 'y':
+                        print("\n用户选择继续处理")
                         no_new_posts_time = 0
                     else:
                         print("退出处理。\n")
                         break
         except Exception as e:
-            print(f"处理帖子时出错: {e}\n")
+            print(f"处理帖子时出错: {e}")
+            time.sleep(2)
     return image_urls
 
-# 下载所有收集的图片
+# 下载所有收集的图片（多线程）
 def download_images(image_urls):
-    print("\n开始下载所有图片...\n")
-    for i, (post_id, img_id, png_url, jpg_url, formatted_time) in enumerate(image_urls, 1):
-        try:
-            if formatted_time == "unknown":
-                filename_base = f"{post_id}_{img_id}"
-            else:
-                filename_base = f"{formatted_time}_{post_id}_{img_id}"
-            
-            # 尝试下载PNG
-            png_filepath = os.path.join(DOWNLOAD_DIR, f"{filename_base}.png")
-            if download_image(png_url, png_filepath, max_retries=3):
-                continue  # PNG下载成功，跳过JPG
-            
-            # PNG下载失败，尝试下载JPG
-            jpg_filepath = os.path.join(DOWNLOAD_DIR, f"{filename_base}.jpg")
-            if download_image(jpg_url, jpg_filepath, max_retries=3):
-                continue  # JPG下载成功
-            
-            # 两者都下载失败
-            print(f"图片 {filename_base} 下载失败（PNG和JPG均失败）")
-            
-            # 询问用户是否继续尝试
-            while True:
-                user_input = input("6次尝试均失败，是否继续尝试下载此图片？(y/n): ").strip().lower()
-                if user_input == 'y':
-                    if download_image(png_url, png_filepath, max_retries=3):
-                        break
-                    elif download_image(jpg_url, jpg_filepath, max_retries=3):
-                        break
-                    else:
-                        print("再次尝试下载失败")
+    print(f"开始多线程下载 {len(image_urls)} 张图片...\n")
+    downloaded_count = 0  # 统计成功下载的图片数
+    with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+        # 提交所有下载任务
+        future_to_image = {
+            executor.submit(download_single_image, post_id, img_id, png_url, jpg_url, formatted_time): (post_id, img_id)
+            for post_id, img_id, png_url, jpg_url, formatted_time in image_urls
+        }
+        # 等待任务完成
+        for future in as_completed(future_to_image):
+            post_id, img_id = future_to_image[future]
+            try:
+                result = future.result()
+                if result:
+                    print(f"图片 {post_id}_{img_id} 下载成功")
+                    downloaded_count += 1
                 else:
-                    print("跳过此图片")
-                    break
-        except Exception as e:
-            print(f"下载图片时出错: {e}\n")
-    print("所有图片下载完成！\n")
+                    print(f"图片 {post_id}_{img_id} 下载失败或被跳过")
+            except Exception as e:
+                print(f"图片 {post_id}_{img_id} 下载时发生异常: {e}")
+    print(f"所有图片下载完成！共下载 {downloaded_count} 张图片\n")
 
 # 主函数
 def main():
@@ -220,7 +247,7 @@ def main():
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//article[@role='article']")))
         print(f"已打开 {TARGET_AUTHOR} 的页面\n")
     except TimeoutException:
-        print(f"无法加载 {TARGET_AUTHOR} 的页面，请检查网络或登录状态！\n")
+        print(f"无法加载 {TARGET_AUTHOR} 的页面，请检查网络或登录状态！")
         driver.quit()
         exit(1)
 
@@ -228,7 +255,7 @@ def main():
     image_urls = process_posts()
 
     if not image_urls:
-        print("没有收集到任何图片，程序退出！\n")
+        print("没有收集到任何图片，程序退出！")
         driver.quit()
         return
 
