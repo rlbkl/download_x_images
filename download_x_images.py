@@ -16,8 +16,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 # 配置
 TARGET_AUTHOR = "用户名"      # 目标作者的Twitter用户名
-DOWNLOAD_DIR = TARGET_AUTHOR          # 图片下载目录
-COOKIES_FILE = "cookies.json"         # Cookies保存文件
+DOWNLOAD_DIR = TARGET_AUTHOR  # 图片下载目录
+COOKIES_FILE = "cookies.json" # Cookies保存文件
 
 # 创建下载目录
 if not os.path.exists(DOWNLOAD_DIR):
@@ -65,32 +65,37 @@ def load_cookies():
     return False
 
 # 下载图片
-def download_image(url, filepath):
-    try:
-        response = requests.get(url, stream=True, timeout=10)
-        if response.status_code == 200:
-            with open(filepath, "wb") as f:
-                f.write(response.content)
-            print(f"已下载图片: {filepath}")
-        else:
-            print(f"下载图片失败: {url} (HTTP状态码: {response.status_code})")
-    except requests.RequestException as e:
-        print(f"下载图片时出错: {url} ({e})")
+def download_image(url, filepath, max_retries=3):
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = requests.get(url, stream=True, timeout=10)
+            if response.status_code == 200:
+                with open(filepath, "wb") as f:
+                    f.write(response.content)
+                print(f"已下载图片: {filepath}")
+                return True
+            else:
+                print(f"下载图片失败: {url} (HTTP状态码: {response.status_code})，尝试 {attempt}/{max_retries}")
+        except requests.RequestException as e:
+            print(f"下载图片时出错: {url} ({e})，尝试 {attempt}/{max_retries}")
+        time.sleep(1)  # 短暂等待后重试
+    return False
 
 # 提取图片ID并构造高清URL
 def get_image_info(img_url):
     try:
         img_id = img_url.split("/media/")[1].split("?")[0]
-        hd_url = f"https://pbs.twimg.com/media/{img_id}?format=jpg&name=large"
-        return img_id, hd_url
+        png_url = f"https://pbs.twimg.com/media/{img_id}?format=png&name=large"
+        jpg_url = f"https://pbs.twimg.com/media/{img_id}?format=jpg&name=large"
+        return img_id, png_url, jpg_url
     except IndexError:
         print(f"无法解析图片URL: {img_url}")
-        return None, None
+        return None, None, None
 
 # 处理帖子
 def process_posts():
     print("程序将自动模拟鼠标缓慢向下滑动，并处理新出现的帖子。\n")
-    image_urls = []  # 存储图片信息：(post_id, img_id, hd_url, formatted_time)
+    image_urls = []  # 存储图片信息：(post_id, img_id, png_url, jpg_url, formatted_time)
     processed_post_ids = set()  # 跟踪已处理的帖子ID
     processed_posts = 0
     no_new_posts_time = 0
@@ -138,9 +143,9 @@ def process_posts():
                             try:
                                 img = container.find_element(By.XPATH, ".//img[@alt='图像']")
                                 img_url = img.get_attribute("src")
-                                img_id, hd_url = get_image_info(img_url)
-                                if img_id and hd_url:
-                                    image_urls.append((post_id, img_id, hd_url, formatted_time))
+                                img_id, png_url, jpg_url = get_image_info(img_url)
+                                if img_id and png_url and jpg_url:
+                                    image_urls.append((post_id, img_id, png_url, jpg_url, formatted_time))
                                     print(f"提取图片 {j}: ID为 {img_id}\n")
                                 else:
                                     print(f"帖子 {processed_posts} 的第 {j} 张图片URL无效\n")
@@ -168,16 +173,41 @@ def process_posts():
 # 下载所有收集的图片
 def download_images(image_urls):
     print("\n开始下载所有图片...\n")
-    for i, (post_id, img_id, hd_url, formatted_time) in enumerate(image_urls, 1):
+    for i, (post_id, img_id, png_url, jpg_url, formatted_time) in enumerate(image_urls, 1):
         try:
             if formatted_time == "unknown":
-                filename = f"{post_id}_{img_id}.jpg"
+                filename_base = f"{post_id}_{img_id}"
             else:
-                filename = f"{formatted_time}_{post_id}_{img_id}.jpg"
-            filepath = os.path.join(DOWNLOAD_DIR, filename)
-            download_image(hd_url, filepath)
+                filename_base = f"{formatted_time}_{post_id}_{img_id}"
+            
+            # 尝试下载PNG
+            png_filepath = os.path.join(DOWNLOAD_DIR, f"{filename_base}.png")
+            if download_image(png_url, png_filepath, max_retries=3):
+                continue  # PNG下载成功，跳过JPG
+            
+            # PNG下载失败，尝试下载JPG
+            jpg_filepath = os.path.join(DOWNLOAD_DIR, f"{filename_base}.jpg")
+            if download_image(jpg_url, jpg_filepath, max_retries=3):
+                continue  # JPG下载成功
+            
+            # 两者都下载失败
+            print(f"图片 {filename_base} 下载失败（PNG和JPG均失败）")
+            
+            # 询问用户是否继续尝试
+            while True:
+                user_input = input("6次尝试均失败，是否继续尝试下载此图片？(y/n): ").strip().lower()
+                if user_input == 'y':
+                    if download_image(png_url, png_filepath, max_retries=3):
+                        break
+                    elif download_image(jpg_url, jpg_filepath, max_retries=3):
+                        break
+                    else:
+                        print("再次尝试下载失败")
+                else:
+                    print("跳过此图片")
+                    break
         except Exception as e:
-            print(f"下载图片 {hd_url} 时出错: {e}\n")
+            print(f"下载图片时出错: {e}\n")
     print("所有图片下载完成！\n")
 
 # 主函数
