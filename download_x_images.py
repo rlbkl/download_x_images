@@ -5,8 +5,10 @@
 import os
 import pickle
 import time
+import gc
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+#import pyautogui
 
 import requests
 from selenium import webdriver
@@ -27,6 +29,15 @@ if not os.path.exists(DOWNLOAD_DIR):
 
 # 初始化浏览器
 driver = webdriver.Chrome()
+# 设置窗口大小为 879x1133
+#driver.set_window_size(879, 1133)
+# 获取屏幕大小
+#screen_width, screen_height = pyautogui.size()
+# 将窗口定位到屏幕最右边，垂直居中
+#window_x = screen_width - 879  # 屏幕宽度 - 窗口宽度
+#window_y = (screen_height - 1133) / 2  # 屏幕高度 - 窗口高度，除以2
+#driver.set_window_position(window_x, window_y)
+#print(f"浏览器窗口已设置为 879x1133 像素，定位于屏幕最右边中间 (x={window_x}, y={window_y})")
 
 # 检测是否已登录
 def check_login():
@@ -131,6 +142,9 @@ def download_single_image(post_id, img_id, png_url, jpg_url, formatted_time):
     except Exception as e:
         print(f"下载图片 {filename_base} 时出错: {e}")
         return False
+    finally:
+        # 确保文件句柄关闭
+        gc.collect()
 
 # 处理帖子
 def process_posts():
@@ -200,7 +214,6 @@ def process_posts():
             else:
                 no_new_posts_time += 0.5
                 if no_new_posts_time >= 10:
-                    print("10秒内没有新帖子出现，等待用户输入...")
                     user_input = input("10秒内没有新帖子出现，是否继续？(y/n): ").strip().lower()
                     if user_input == 'y':
                         print("\n用户选择继续处理")
@@ -235,7 +248,14 @@ def download_images(image_urls):
                     print(f"图片 {post_id}_{img_id} 下载失败或被跳过")
             except Exception as e:
                 print(f"图片 {post_id}_{img_id} 下载时发生异常: {e}")
-    print(f"所有图片下载完成！共下载 {downloaded_count} 张图片\n")
+    print(f"所有图片下载完成！共下载 {downloaded_count} 张图片")
+    # 释放 DOWNLOAD_DIR 目录
+    try:
+        gc.collect()  # 强制垃圾回收，释放可能的未关闭句柄
+        print(f"\n已释放目录 {DOWNLOAD_DIR}，可供其他程序访问")
+    except Exception as e:
+        print(f"释放目录 {DOWNLOAD_DIR} 时出错: {e}")
+    return downloaded_count
 
 # 主函数
 def main():
